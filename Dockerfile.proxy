@@ -1,0 +1,10 @@
+FROM nginx:stable-alpine
+
+RUN apk update
+RUN apk add htop bash
+
+EXPOSE 1935
+
+STOPSIGNAL SIGTERM
+
+CMD ["nginx", "-g", "daemon off;"]
