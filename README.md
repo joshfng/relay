@@ -1,7 +1,6 @@
 # Relay
 
 # TODO:
-  - clean up main
   - ffmpeg try 1 proc per stream and also tees w/ maps
   - restrict outbound bitrate?
   - stream publish authorization

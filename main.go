@@ -58,85 +58,85 @@ loop:
 	}
 }
 
-func main() {
-	l := &sync.RWMutex{}
-	type Channel struct {
-		que *pubsub.Queue
-	}
-	channels := map[string]*Channel{}
+// HandlePlay pushes incoming stream to outbound stream
+func HandlePlay(conn *rtmp.Conn) {
+	log.Println("got play")
+	lock.RLock()
+	ch, chExists := channels[conn.URL.Path]
+	lock.RUnlock()
 
+	if chExists {
+		log.Println("sending play packets")
+		cursor := ch.que.Latest()
+		avutil.CopyFile(conn, cursor)
+		log.Println("play stopped")
+	}
+}
+
+// HandlePublish handles an incoming stream
+func HandlePublish(conn *rtmp.Conn) {
+	log.Println("got publish")
+
+	// TODO: don't allow unauthorized restreams
+	exists := true
+	if !exists {
+		log.Println("Unknown stream ID; dropping connection.")
+		conn.Close()
+		return
+	}
+
+	streams, _ := conn.Streams()
+
+	lock.Lock()
+
+	ch := Channel{}
+	ch.que = pubsub.NewQueue()
+	ch.que.WriteHeader(streams)
+	channels[conn.URL.Path] = ch
+	lock.Unlock()
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	youtubeChannel := make(chan bool)
+	go relayConnection(os.Getenv("YOUTUBE_URL"), &wg, youtubeChannel)
+
+	wg.Add(1)
+	twitchChannel := make(chan bool)
+	go relayConnection(os.Getenv("TWITCH_URL"), &wg, twitchChannel)
+
+	log.Println("sending publish packets")
+	avutil.CopyPackets(ch.que, conn)
+
+	log.Println("Stream stopped, sending kill sigs")
+	youtubeChannel <- false
+	close(youtubeChannel)
+	twitchChannel <- false
+	close(twitchChannel)
+
+	lock.Lock()
+	delete(channels, conn.URL.Path)
+	lock.Unlock()
+	ch.que.Close()
+
+	wg.Wait()
+}
+
+// Channel holds connection information and packet queue
+type Channel struct {
+	que *pubsub.Queue
+}
+
+var lock = &sync.RWMutex{}
+var channels = make(map[string]Channel)
+
+func main() {
 	server := &rtmp.Server{
 		Addr: "0.0.0.0:1935",
 	}
 
-	server.HandlePlay = func(conn *rtmp.Conn) {
-		log.Println("got play")
-		l.RLock()
-		ch := channels[conn.URL.Path]
-		l.RUnlock()
-
-		if ch != nil {
-			log.Println("sending play packets")
-			cursor := ch.que.Latest()
-			avutil.CopyFile(conn, cursor)
-			log.Println("play stopped")
-		}
-	}
-
-	server.HandlePublish = func(conn *rtmp.Conn) {
-		log.Println("got publish")
-
-		// TODO: don't allow unauthorized restreams
-		exists := true
-		if !exists {
-			log.Println("Unknown stream ID; dropping connection.")
-			conn.Close()
-			return
-		}
-
-		streams, _ := conn.Streams()
-
-		l.Lock()
-		ch := channels[conn.URL.Path]
-		if ch == nil {
-			ch = &Channel{}
-			ch.que = pubsub.NewQueue()
-			ch.que.WriteHeader(streams)
-			channels[conn.URL.Path] = ch
-		} else {
-			ch = nil
-		}
-		l.Unlock()
-		if ch == nil {
-			return
-		}
-
-		var wg sync.WaitGroup
-
-		wg.Add(1)
-		youtubeChannel := make(chan bool)
-		go relayConnection(os.Getenv("YOUTUBE_URL"), &wg, youtubeChannel)
-
-		wg.Add(1)
-		twitchChannel := make(chan bool)
-		go relayConnection(os.Getenv("TWITCH_URL"), &wg, twitchChannel)
-
-		log.Println("sending publish packets")
-		avutil.CopyPackets(ch.que, conn)
-
-		log.Println("Stream stopped, sending kill sigs")
-		youtubeChannel <- false
-		close(youtubeChannel)
-		twitchChannel <- false
-		close(twitchChannel)
-
-		l.Lock()
-		delete(channels, conn.URL.Path)
-		l.Unlock()
-		ch.que.Close()
-
-		wg.Wait()
-	}
+	server.HandlePlay = HandlePlay
+	server.HandlePublish = HandlePublish
 
 	log.Println("server running:", server.Addr)
 	log.Println("ffmpeg path:", os.Getenv("FFMPEG_PATH"))
