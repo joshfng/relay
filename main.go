@@ -122,11 +122,6 @@ func HandlePublish(conn *rtmp.Conn) {
 	wg.Wait()
 }
 
-// Channel holds connection information and packet queue
-type Channel struct {
-	que *pubsub.Queue
-}
-
 var lock = &sync.RWMutex{}
 var channels = make(map[string]Channel)
 

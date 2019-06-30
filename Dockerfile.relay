@@ -1,7 +1,6 @@
 FROM golang:1.12-alpine
 
-RUN apk update
-RUN apk add git ffmpeg htop bash
+RUN apk --update add git ffmpeg htop bash make
 
 WORKDIR /go/src/github.com/joshfng/relay
 

@@ -1,22 +1,36 @@
-image: golang:1.12
-
-cache:
-  paths:
-    - /apt-cache
-    - /go/src/github.com
-    - /go/src/golang.org
-    - /go/src/google.golang.org
-    - /go/src/gopkg.in
+image: golang:1.12-alpine
 
 stages:
   - test
   - build
+  - build-image
 
-before_script:
-  - mkdir -p /go/src/gitlab.com/joshfng /go/src/_/builds
-  - cp -r $CI_PROJECT_DIR /go/src/gitlab.com/joshfng/relay
-  - ln -s /go/src/gitlab.com/joshfng /go/src/_/builds/joshfng
-  - make dep
+.before_script_defaults: &before_script_defaults
+  before_script:
+    - mkdir -p /go/src/gitlab.com/joshfng /go/src/_/builds
+    - cp -r $CI_PROJECT_DIR /go/src/gitlab.com/joshfng/relay
+    - ln -s /go/src/gitlab.com/joshfng /go/src/_/builds/joshfng
+    - apk --update add make git
+
+build:
+  <<: *before_script_defaults
+  stage: build
+  script:
+    - make
+
+build-image:
+  <<: *before_script_defaults
+  stage: build
+  image: docker:stable
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build -t $CI_REGISTRY/joshfng/relay/relay:latest -f Dockerfile.relay .
+    - docker push $CI_REGISTRY/joshfng/relay/relay:latest
 
 # unit_tests:
 #   stage: test
@@ -49,12 +63,3 @@ before_script:
 #   stage: test
 #   script:
 #     - make lint
-
-build:
-  stage: build
-  script:
-    - make
-  artifacts:
-    paths:
-    - relay
-    expire_in: 1 week
