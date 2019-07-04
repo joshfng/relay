@@ -7,9 +7,9 @@ stages:
 
 .before_script_defaults: &before_script_defaults
   before_script:
-    - mkdir -p /go/src/gitlab.com/joshfng /go/src/_/builds
-    - cp -r $CI_PROJECT_DIR /go/src/gitlab.com/joshfng/relay
-    - ln -s /go/src/gitlab.com/joshfng /go/src/_/builds/joshfng
+    - mkdir -p /go/src/github.com/joshfng /go/src/_/builds
+    - cp -r $CI_PROJECT_DIR /go/src/github.com/joshfng/relay
+    - ln -s /go/src/github.com/joshfng /go/src/_/builds/joshfng
     - apk --update add make git
 
 build:
@@ -31,7 +31,6 @@ build-image:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     - docker build -t $CI_REGISTRY/joshfng/relay/relay:latest -f Dockerfile.relay .
     - docker push $CI_REGISTRY/joshfng/relay/relay:latest
-
 # unit_tests:
 #   stage: test
 #   script:
