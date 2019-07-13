@@ -127,7 +127,7 @@ func HandlePublish(conn *rtmp.Conn) {
 	for key, outputStream := range outputStreams {
 		for idx, channel := range outputStream {
 			log.Printf("sending stop signal to channel %d for output url %s", idx, key)
-			channel <- false
+			channel <- true
 			close(channel)
 		}
 
@@ -155,13 +155,12 @@ func initConfig() {
 	viper.AddConfigPath(".")
 	viper.AutomaticEnv()
 
-	err := viper.ReadInConfig()
-	if err != nil {
+	if viper.ReadInConfig() != nil {
 		log.Println("No .env file found, assuming ENV is set")
-	}
-
-	if viper.GetBool("DEBUG") {
-		log.Println(viper.AllSettings())
+	} else {
+		if viper.GetBool("DEBUG") {
+			log.Println(viper.AllSettings())
+		}
 	}
 }
 
