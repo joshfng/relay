@@ -9,9 +9,8 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/joshfng/joy4/av/avutil"
 	"github.com/joshfng/joy4/format/rtmp"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 func relayConnection(conn *rtmp.Conn, streamURL string, wg *sync.WaitGroup, stop chan bool) {
@@ -19,10 +18,10 @@ func relayConnection(conn *rtmp.Conn, streamURL string, wg *sync.WaitGroup, stop
 
 	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", conn.URL.Path}, "")
 
-	logger.Debug("starting ffmpeg relay for ", playURL)
+	log.Debug("starting ffmpeg relay for ", playURL)
 	cmd := exec.Command(viper.GetString("FFMPEG_PATH"), "-i", playURL, "-c", "copy", "-f", "flv", streamURL)
 
-	// logger.Info(cmd.Args)
+	// log.Info(cmd.Args)
 
 	// var stdOut bytes.Buffer
 	// var stdErr bytes.Buffer
@@ -30,21 +29,21 @@ func relayConnection(conn *rtmp.Conn, streamURL string, wg *sync.WaitGroup, stop
 	// cmd.Stderr = &stdErr
 	err := cmd.Start()
 	if err != nil {
-		logger.Info(err)
+		log.Info(err)
 		return
 	}
 
 	go func() {
 		err := cmd.Wait()
-		logger.Debug("ffmpeg process exited")
-		logger.Debug(err)
+		log.Debug("ffmpeg process exited")
+		log.Debug(err)
 		// log.Printf("ffmpeg outout: %q\n", stdOut.String())
 		// log.Printf("ffmpeg error: %q\n", stdErr.String())
 	}()
 
 	select {
 	case <-stop:
-		logger.Debug("shutting down relay for", streamURL)
+		log.Debug("shutting down relay for", streamURL)
 		// log.Printf("ffmpeg outout: %q\n", stdOut.String())
 		// log.Printf("ffmpeg error: %q\n", stdErr.String())
 		cmd.Process.Kill()
@@ -58,10 +57,10 @@ func StreamExists(url string) bool {
 
 // HandlePlay pushes incoming stream to outbound stream
 func HandlePlay(conn *rtmp.Conn) {
-	logger.Debug("got play", conn.URL.Path)
+	log.Debug("got play", conn.URL.Path)
 
 	if !StreamExists(conn.URL.Path) {
-		logger.Infof("Unknown stream ID for %s; dropping connection", conn.URL.Path)
+		log.Infof("Unknown stream ID for %s; dropping connection", conn.URL.Path)
 		conn.Close()
 		return
 	}
@@ -71,18 +70,18 @@ func HandlePlay(conn *rtmp.Conn) {
 	lock.RUnlock()
 
 	if chExists {
-		logger.Debug("play started", conn.URL.Path)
+		log.Debug("play started", conn.URL.Path)
 		avutil.CopyFile(conn, ch.Queue.Latest())
-		logger.Debug("play stopped", conn.URL.Path)
+		log.Debug("play stopped", conn.URL.Path)
 	}
 }
 
 // HandlePublish handles an incoming stream
 func HandlePublish(conn *rtmp.Conn) {
-	logger.Info("starting publish for ", conn.URL.Path)
+	log.Info("starting publish for ", conn.URL.Path)
 
 	if !StreamExists(conn.URL.Path) {
-		logger.Infof("Unknown stream ID for %s; dropping connection", conn.URL.Path)
+		log.Infof("Unknown stream ID for %s; dropping connection", conn.URL.Path)
 		conn.Close()
 		return
 	}
@@ -101,7 +100,7 @@ func HandlePublish(conn *rtmp.Conn) {
 	for _, outputStreamURL := range redisClient.SMembers(conn.URL.Path).Val() {
 		wg.Add(1)
 
-		logger.Debug("creating relay connections for ", conn.URL.Path)
+		log.Debug("creating relay connections for ", conn.URL.Path)
 		stopChannel := make(chan bool)
 
 		ch.Lock.Lock()
@@ -116,13 +115,13 @@ func HandlePublish(conn *rtmp.Conn) {
 		go relayConnection(conn, outputStreamURL, &wg, stopChannel)
 	}
 
-	logger.Debug("sending publish packets ", conn.URL.Path)
+	log.Debug("sending publish packets ", conn.URL.Path)
 	avutil.CopyPackets(ch.Queue, conn)
 
-	logger.Debug("Stream stopped, sending kill sigs ", conn.URL.Path)
+	log.Debug("Stream stopped, sending kill sigs ", conn.URL.Path)
 
 	for _, outputStream := range ch.OutputStreams {
-		logger.Debugf("sending stop signal to channel for output url %s", outputStream.URL)
+		log.Debugf("sending stop signal to channel for output url %s", outputStream.URL)
 		outputStream.Channel <- true
 		close(outputStream.Channel)
 	}
@@ -133,14 +132,13 @@ func HandlePublish(conn *rtmp.Conn) {
 	delete(channels, conn.URL.Path)
 	lock.Unlock()
 
-	logger.Info("stopped publish for ", conn.URL.Path)
+	log.Info("stopped publish for ", conn.URL.Path)
 }
 
 var lock = &sync.RWMutex{}
 var channels = make(map[string]*Channel)
 
 var redisClient *redis.Client
-var logger *zap.SugaredLogger
 
 func initConfig() {
 	viper.SetConfigType("env")
@@ -149,33 +147,18 @@ func initConfig() {
 	viper.AutomaticEnv()
 
 	viper.ReadInConfig()
-}
-
-func initLogger() {
-	atom := zap.NewAtomicLevel()
-	encoderCfg := zap.NewProductionEncoderConfig()
-	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
-
-	tmplogger := zap.New(zapcore.NewCore(
-		zapcore.NewConsoleEncoder(encoderCfg),
-		zapcore.Lock(os.Stdout),
-		atom,
-	))
-	logger = tmplogger.Sugar()
-	defer logger.Sync()
 
 	if viper.GetBool("DEBUG") {
-		atom.SetLevel(zap.DebugLevel)
+		log.SetLevel(log.DebugLevel)
 	} else {
-		atom.SetLevel(zap.InfoLevel)
+		log.SetLevel(log.InfoLevel)
 	}
 
-	logger.Info("logger activated ", atom.Level().String())
+	log.SetOutput(os.Stdout)
 }
 
 func main() {
 	initConfig()
-	initLogger()
 	redisClient = redis.NewClient(&redis.Options{
 		Addr: viper.GetString("REDIS_URL"),
 	})
@@ -190,7 +173,7 @@ func main() {
 	server.HandlePlay = HandlePlay
 	server.HandlePublish = HandlePublish
 
-	logger.Info("server running:", server.Addr)
+	log.Info("server running:", server.Addr)
 
 	server.ListenAndServe()
 }
