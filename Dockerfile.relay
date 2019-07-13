@@ -1,6 +1,6 @@
-FROM golang:1.12-alpine
+FROM golang:1.12-alpine AS builder
 
-RUN apk --update add git ffmpeg htop bash make
+RUN apk --update add git bash make
 
 WORKDIR /go/src/github.com/joshfng/relay
 
@@ -9,8 +9,12 @@ COPY . .
 RUN go get .
 RUN go build -o relay *.go
 
-EXPOSE 1935
+FROM alpine
 
-STOPSIGNAL SIGTERM
+RUN apk --update add ffmpeg htop
+
+COPY --from=builder /go/src/github.com/joshfng/relay/relay /relay
+
+EXPOSE 1935
 
 ENTRYPOINT ["./relay"]
