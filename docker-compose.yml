@@ -7,7 +7,7 @@ services:
     ports:
       - "6379:6379"
     restart: on-failure
-    command: ["redis-server", "--bind", "0.0.0.0"]
+    # command: ["redis-server", "--bind", "0.0.0.0"]
 
   proxy:
     ports:
