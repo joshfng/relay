@@ -2,22 +2,22 @@ package main
 
 import (
 	"log"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/go-redis/redis"
 	"github.com/joshfng/joy4/av/avutil"
 	"github.com/joshfng/joy4/av/pubsub"
 	"github.com/joshfng/joy4/format/rtmp"
+	"github.com/spf13/viper"
 )
 
 // NEED
 // stream struct
 // restream struct
 
-func relayConnection(conn *rtmp.Conn, streamURL string, wg *sync.WaitGroup, streaming chan bool) {
+func relayConnection(conn *rtmp.Conn, streamURL string, wg *sync.WaitGroup, stop chan bool) {
 	defer wg.Done()
 
 	if !StreamExists(conn.URL.Path) {
@@ -26,10 +26,10 @@ func relayConnection(conn *rtmp.Conn, streamURL string, wg *sync.WaitGroup, stre
 		return
 	}
 
-	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", conn.URL.Path}, "/")
+	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", conn.URL.Path}, "")
 
 	log.Println("starting ffmpeg relay for", playURL)
-	cmd := exec.Command(os.Getenv("FFMPEG_PATH"), "-i", playURL, "-c", "copy", "-f", "flv", streamURL)
+	cmd := exec.Command(viper.GetString("FFMPEG_PATH"), "-i", playURL, "-c", "copy", "-f", "flv", streamURL)
 
 	// log.Println(cmd.Args)
 
@@ -51,32 +51,18 @@ func relayConnection(conn *rtmp.Conn, streamURL string, wg *sync.WaitGroup, stre
 		// log.Printf("ffmpeg error: %q\n", stdErr.String())
 	}()
 
-loop:
-	for {
-		select {
-		case <-streaming:
-			log.Println("shutting down stream for: ", streamURL)
-			// log.Printf("ffmpeg outout: %q\n", stdOut.String())
-			// log.Printf("ffmpeg error: %q\n", stdErr.String())
-			cmd.Process.Kill()
-			break loop
-		default:
-			time.Sleep(time.Second * 1)
-		}
+	select {
+	case <-stop:
+		log.Println("shutting down stream for:", streamURL)
+		// log.Printf("ffmpeg outout: %q\n", stdOut.String())
+		// log.Printf("ffmpeg error: %q\n", stdErr.String())
+		cmd.Process.Kill()
 	}
 }
 
 // StreamExists checks if the requested stream is allowed
 func StreamExists(url string) bool {
-	exists := false
-
-	for _, streamURL := range streams {
-		if streamURL == url {
-			exists = true
-		}
-	}
-
-	return exists
+	return redisClient.SIsMember("streams", url).Val()
 }
 
 // HandlePlay pushes incoming stream to outbound stream
@@ -113,7 +99,6 @@ func HandlePublish(conn *rtmp.Conn) {
 	streams, _ := conn.Streams()
 
 	lock.Lock()
-
 	ch := Channel{}
 	ch.que = pubsub.NewQueue()
 	ch.que.WriteHeader(streams)
@@ -122,22 +107,33 @@ func HandlePublish(conn *rtmp.Conn) {
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	youtubeChannel := make(chan bool)
-	go relayConnection(conn, os.Getenv("YOUTUBE_URL"), &wg, youtubeChannel)
+	lock.Lock()
+	for _, outputStream := range redisClient.SMembers(conn.URL.Path).Val() {
+		wg.Add(1)
 
-	wg.Add(1)
-	twitchChannel := make(chan bool)
-	go relayConnection(conn, os.Getenv("TWITCH_URL"), &wg, twitchChannel)
+		log.Println("creating relay connections for", conn.URL.Path)
+		stopChannel := make(chan bool)
+		outputStreams[conn.URL.Path] = append(outputStreams[conn.URL.Path], stopChannel)
+		go relayConnection(conn, outputStream, &wg, stopChannel)
+	}
+	lock.Unlock()
 
 	log.Println("sending publish packets", conn.URL.Path)
 	avutil.CopyPackets(ch.que, conn)
 
 	log.Println("Stream stopped, sending kill sigs", conn.URL.Path)
-	youtubeChannel <- false
-	close(youtubeChannel)
-	twitchChannel <- false
-	close(twitchChannel)
+
+	lock.Lock()
+	for key, outputStream := range outputStreams {
+		for idx, channel := range outputStream {
+			log.Printf("sending stop signal to channel %d for output url %s", idx, key)
+			channel <- false
+			close(channel)
+		}
+
+		delete(outputStreams, conn.URL.Path)
+	}
+	lock.Unlock()
 
 	wg.Wait()
 
@@ -149,17 +145,44 @@ func HandlePublish(conn *rtmp.Conn) {
 
 var lock = &sync.RWMutex{}
 var channels = make(map[string]*Channel)
-var streams = []string{"/live/joshfng"}
+var outputStreams = make(map[string][]chan bool)
+
+var redisClient *redis.Client
+
+func initConfig() {
+	viper.SetConfigType("env")
+	viper.SetConfigFile(".env")
+	viper.AddConfigPath(".")
+	viper.AutomaticEnv()
+
+	err := viper.ReadInConfig()
+	if err != nil {
+		log.Println("No .env file found, assuming ENV is set")
+	}
+
+	if viper.GetBool("DEBUG") {
+		log.Println(viper.AllSettings())
+	}
+}
 
 func main() {
+	initConfig()
+
+	redisClient = redis.NewClient(&redis.Options{
+		Addr: viper.GetString("REDIS_URL"),
+	})
+	if redisClient.Ping().Err() != nil {
+		panic("Unable to connect to redis")
+	}
+
 	server := &rtmp.Server{
-		Addr: "0.0.0.0:1935",
+		Addr: viper.GetString("RTMP_URL"),
 	}
 
 	server.HandlePlay = HandlePlay
 	server.HandlePublish = HandlePublish
 
 	log.Println("server running:", server.Addr)
-	log.Println("ffmpeg path:", os.Getenv("FFMPEG_PATH"))
+
 	server.ListenAndServe()
 }
