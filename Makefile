@@ -1,7 +1,14 @@
-PROJECT_NAME := "relay"
-PKG := "github.com/joshfng/$(PROJECT_NAME)"
+BINARY := "relay"
+VERSION=1.0.1
+BUILD=`git rev-parse HEAD`
+PLATFORMS=darwin linux
+ARCHITECTURES=amd64
+
+PKG := "github.com/joshfng/relay"
 PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
 GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/ | grep -v _test.go)
+
+LDFLAGS=-ldflags "-X main.Version=${VERSION} -X main.Build=${BUILD}"
 
 .PHONY: all dep build clean test coverage coverhtml lint
 
@@ -29,10 +36,15 @@ dep: ## Get the dependencies
 	@go get -v -d ./...
 
 build: dep ## Build the binary file
-	@go build -i -v $(PKG)
+	@go build ${LDFLAGS} -race -v -a $(PKG)
 
-clean: ## Remove previous build
-	@rm -f $(PROJECT_NAME)
+build_all:
+	@$(foreach GOOS, $(PLATFORMS),\
+	$(foreach GOARCH, $(ARCHITECTURES), $(shell export GOOS=$(GOOS); export GOARCH=$(GOARCH); go build $(LDFLAGS) -race -v -a -o $(BINARY)-$(GOOS)-$(GOARCH))))
+
+clean: ## Remove previous builds
+	@$(foreach GOOS, $(PLATFORMS),\
+	$(foreach GOARCH, $(ARCHITECTURES), $(shell rm -rf $(BINARY)-$(GOOS)-$(GOARCH))))
 
 help: ## Display this help screen
 	@grep -h -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
