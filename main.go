@@ -1,6 +1,8 @@
 package main
 
 import (
+	"sync"
+
 	"github.com/joshfng/relay/server"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
@@ -32,6 +34,7 @@ func main() {
 	config := server.Config{
 		RedisAddr: viper.GetString("REDIS_URL"),
 		RtmpAddr:  viper.GetString("RTMP_URL"),
+		Lock:      &sync.RWMutex{},
 	}
-	server.StartServer(&config)
+	server.StartServer(config)
 }
