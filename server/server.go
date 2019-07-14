@@ -71,7 +71,7 @@ func NewChannel() *Channel {
 // StartServer starts the RTMP server and relay proxies
 func StartServer(serverConfig Config) {
 	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-c
 		log.Info("got shutdown signal, closing relays and connections")
