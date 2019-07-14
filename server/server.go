@@ -17,9 +17,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-// TODO:
-// when a relay ends early, set something in redis to notify the user of the disconnect
-// maybe retry?
+// TODO: when a relay fails notify the user of the disconnect & maybe retry?
 
 var channels = make(map[string]*Channel)
 var redisClient *redis.Client
@@ -30,6 +28,16 @@ type Server struct {
 	RedisAddr string
 	RtmpAddr  string
 	Lock      *sync.RWMutex
+	Conn      *rtmp.Conn
+}
+
+// NewServer returns a new relay server
+func NewServer(rtmpURL string, redisURL string) *Server {
+	return &Server{
+		RtmpAddr:  rtmpURL,
+		RedisAddr: redisURL,
+		Lock:      &sync.RWMutex{},
+	}
 }
 
 // PubSubMessage holds infomation on which stream to add/remove connections from
@@ -41,7 +49,6 @@ type PubSubMessage struct {
 
 // OutputStream holds info about outbound rtmp streams
 type OutputStream struct {
-	PlayURL string
 	URL     string
 	Channel chan bool
 }
@@ -49,6 +56,7 @@ type OutputStream struct {
 // Channel holds connection information and packet queue
 // as well as a list of outbound streams
 type Channel struct {
+	URL           string
 	Queue         *pubsub.Queue
 	Lock          *sync.RWMutex
 	Conn          *rtmp.Conn
@@ -57,11 +65,13 @@ type Channel struct {
 }
 
 // NewChannel is an incomming stream from a user
-func (server Server) NewChannel() *Channel {
+func (server Server) NewChannel(conn *rtmp.Conn) *Channel {
 	return &Channel{
 		Queue:     pubsub.NewQueue(),
 		Lock:      server.Lock,
 		WaitGroup: &sync.WaitGroup{},
+		Conn:      conn,
+		URL:       conn.URL.Path,
 	}
 }
 
@@ -85,7 +95,7 @@ func (server Server) StartServer() {
 
 		publishWaitGroup.Wait()
 
-		os.Exit(1)
+		os.Exit(0)
 	}()
 
 	redisClient = redis.NewClient(&redis.Options{
@@ -106,17 +116,20 @@ func (server Server) StartServer() {
 
 	log.Infof("server running %s", rtmpServer.Addr)
 
-	rtmpServer.ListenAndServe()
+	err := rtmpServer.ListenAndServe()
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
-func (server Server) relayConnection(channel *Channel, outputStream OutputStream) {
+func (server Server) relayConnection(channel *Channel, currentOutputStream *OutputStream) {
 	channel.WaitGroup.Add(1)
 	defer channel.WaitGroup.Done()
 
-	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", outputStream.PlayURL}, "")
+	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", channel.URL}, "")
 
 	log.Debugf("starting ffmpeg relay for %s", playURL)
-	cmd := exec.Command(viper.GetString("FFMPEG_PATH"), "-i", playURL, "-c", "copy", "-f", "flv", outputStream.URL)
+	cmd := exec.Command(viper.GetString("FFMPEG_PATH"), "-i", playURL, "-c", "copy", "-f", "flv", currentOutputStream.URL)
 
 	log.Debugf("ffmpeg args %v", cmd.Args)
 
@@ -128,8 +141,8 @@ func (server Server) relayConnection(channel *Channel, outputStream OutputStream
 
 	// add output stream to channel
 	channel.Lock.Lock()
-	channel.OutputStreams = append(channel.OutputStreams, outputStream)
-	log.Debugf("channel %s now has %d output streams", channel.Conn.URL.Path, len(channel.OutputStreams))
+	channel.OutputStreams = append(channel.OutputStreams, *currentOutputStream)
+	log.Debugf("channel %s now has %d output streams", channel.URL, len(channel.OutputStreams))
 	channel.Lock.Unlock()
 
 	go func() {
@@ -138,27 +151,25 @@ func (server Server) relayConnection(channel *Channel, outputStream OutputStream
 			log.Infof("ffmpeg process exited %s", err)
 		}
 
-		outputStream.Channel <- true
+		currentOutputStream.Channel <- true
 	}()
 
-	select {
-	case <-outputStream.Channel:
-		log.Debugf("shutting down relay for %s", outputStream.URL)
-		cmd.Process.Signal(os.Kill)
-	}
-	close(outputStream.Channel)
-	outputStream.Channel = nil
+	<-currentOutputStream.Channel
+	log.Debugf("shutting down relay for %s", currentOutputStream.URL)
+	cmd.Process.Signal(os.Kill)
+
+	close(currentOutputStream.Channel)
+	currentOutputStream.Channel = nil
 
 	// remove output stream from channel
 	channel.Lock.Lock()
 
 	newStreams := []OutputStream{}
-	for _, stream := range channel.OutputStreams {
-		if stream.URL == outputStream.URL {
-			// channel.OutputStreams = append(channel.OutputStreams[:idx], channel.OutputStreams[idx+1:]...)
+	for _, outputStream := range channel.OutputStreams {
+		if outputStream.URL == currentOutputStream.URL {
 			continue
 		} else {
-			newStreams = append(newStreams, stream)
+			newStreams = append(newStreams, outputStream)
 		}
 	}
 
@@ -192,9 +203,9 @@ func (server Server) HandlePlay(conn *rtmp.Conn) {
 		return
 	}
 
-	log.Debug("play started ", conn.URL.Path)
+	log.Debug("play started ", ch.URL)
 	avutil.CopyFile(conn, ch.Queue.Latest())
-	log.Debug("play stopped ", conn.URL.Path)
+	log.Debug("play stopped ", ch.URL)
 }
 
 // HandlePublish handles an incoming stream
@@ -213,31 +224,29 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 	streams, _ := conn.Streams()
 
 	server.Lock.Lock()
-	ch := server.NewChannel()
+	ch := server.NewChannel(conn)
 	defer ch.Queue.Close()
 	ch.Queue.WriteHeader(streams)
-	channels[conn.URL.Path] = ch
-	channels[conn.URL.Path].Conn = conn
+	channels[ch.URL] = ch
 	server.Lock.Unlock()
 
-	for _, outputStreamURL := range redisClient.SMembers(conn.URL.Path).Val() {
-		log.Debug("creating relay connections for ", conn.URL.Path)
+	for _, outputStreamURL := range redisClient.SMembers(ch.URL).Val() {
+		log.Debug("creating relay connections for ", ch.URL)
 
 		outputStream := OutputStream{
-			PlayURL: conn.URL.Path,
 			URL:     outputStreamURL,
 			Channel: make(chan bool),
 		}
 
-		go server.relayConnection(ch, outputStream)
+		go server.relayConnection(ch, &outputStream)
 	}
 
-	log.Debugf("stream started %s", conn.URL.Path)
+	log.Debugf("stream started %s", ch.URL)
 	log.Debugf("server is now managing %d channels", len(channels))
 
 	avutil.CopyPackets(ch.Queue, conn)
 
-	log.Debugf("stream stopped %s", conn.URL.Path)
+	log.Debugf("stream stopped %s", ch.URL)
 
 	for _, outputStream := range ch.OutputStreams {
 		log.Debugf("sending stop signal to channel for output url %s", outputStream.URL)
@@ -247,10 +256,10 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 	ch.WaitGroup.Wait()
 
 	server.Lock.Lock()
-	delete(channels, conn.URL.Path)
+	delete(channels, ch.URL)
 	server.Lock.Unlock()
 
-	log.Info("stopped publish for ", conn.URL.Path)
+	log.Info("stopped publish for ", ch.URL)
 	log.Debugf("server is now managing %d channels", len(channels))
 
 }
@@ -324,12 +333,11 @@ func (server Server) subscribeToEvents() {
 				log.Debugf("sending start signal to channel %s for output url %s", message.ChannelURL, message.OutputStreamURL)
 
 				outputStream := OutputStream{
-					PlayURL: message.ChannelURL,
 					URL:     message.OutputStreamURL,
 					Channel: make(chan bool),
 				}
 
-				go server.relayConnection(ch, outputStream)
+				go server.relayConnection(ch, &outputStream)
 			}
 		}
 	}
