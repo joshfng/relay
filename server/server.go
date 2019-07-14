@@ -88,7 +88,7 @@ func StartServer(serverConfig Config) {
 	server.ListenAndServe()
 }
 
-func relayConnection(outputStream *OutputStream, wg *sync.WaitGroup) {
+func relayConnection(channel *Channel, outputStream OutputStream, wg *sync.WaitGroup) {
 	wg.Add(1)
 	defer wg.Done()
 
@@ -105,11 +105,19 @@ func relayConnection(outputStream *OutputStream, wg *sync.WaitGroup) {
 		return
 	}
 
+	// add output stream to channel
+	channel.Lock.Lock()
+	channel.OutputStreams = append(channel.OutputStreams, outputStream)
+	log.Debugf("channel %s now has %d output streams", channel.Conn.URL.Path, len(channel.OutputStreams))
+	channel.Lock.Unlock()
+
 	go func() {
 		err := cmd.Wait()
 		if err != nil && err.Error() != "signal: killed" {
 			log.Infof("ffmpeg process exited %s", err)
 		}
+
+		outputStream.Channel <- true
 	}()
 
 	select {
@@ -117,6 +125,25 @@ func relayConnection(outputStream *OutputStream, wg *sync.WaitGroup) {
 		log.Debugf("shutting down relay for %s", outputStream.URL)
 		cmd.Process.Signal(os.Kill)
 	}
+	close(outputStream.Channel)
+	outputStream.Channel = nil
+
+	// remove output stream from channel
+	channel.Lock.Lock()
+
+	newStreams := []OutputStream{}
+	for _, stream := range channel.OutputStreams {
+		if stream.URL == outputStream.URL {
+			// channel.OutputStreams = append(channel.OutputStreams[:idx], channel.OutputStreams[idx+1:]...)
+			continue
+		} else {
+			newStreams = append(newStreams, stream)
+		}
+	}
+
+	channel.OutputStreams = newStreams
+	log.Debugf("channel %s now has %d output streams", channel.Conn.URL.Path, len(channel.OutputStreams))
+	channel.Lock.Unlock()
 }
 
 // StreamExists checks if the requested stream is allowed
@@ -172,17 +199,13 @@ func HandlePublish(conn *rtmp.Conn) {
 	for _, outputStreamURL := range redisClient.SMembers(conn.URL.Path).Val() {
 		log.Debug("creating relay connections for ", conn.URL.Path)
 
-		ch.Lock.Lock()
 		outputStream := OutputStream{
 			PlayURL: conn.URL.Path,
 			URL:     outputStreamURL,
 			Channel: make(chan bool),
 		}
 
-		channels[conn.URL.Path].OutputStreams = append(channels[conn.URL.Path].OutputStreams, outputStream)
-		ch.Lock.Unlock()
-
-		go relayConnection(&outputStream, &relayWG)
+		go relayConnection(ch, outputStream, &relayWG)
 	}
 
 	log.Debugf("stream started %s", conn.URL.Path)
@@ -191,12 +214,10 @@ func HandlePublish(conn *rtmp.Conn) {
 	avutil.CopyPackets(ch.Queue, conn)
 
 	log.Debugf("stream stopped %s", conn.URL.Path)
-	log.Debugf("server is now managing %d channels", len(channels))
 
 	for _, outputStream := range ch.OutputStreams {
 		log.Debugf("sending stop signal to channel for output url %s", outputStream.URL)
 		outputStream.Channel <- true
-		close(outputStream.Channel)
 	}
 
 	relayWG.Wait()
@@ -206,6 +227,7 @@ func HandlePublish(conn *rtmp.Conn) {
 	config.Lock.Unlock()
 
 	log.Info("stopped publish for ", conn.URL.Path)
+	log.Debugf("server is now managing %d channels", len(channels))
 }
 
 func subscribeToEvents() {
@@ -242,42 +264,35 @@ func subscribeToEvents() {
 				}
 
 				log.Debugf("sending stop signal to channel %s for output url %s", message.ChannelURL, message.OutputStreamURL)
-				newStreams := []OutputStream{}
 
-				for idx, stream := range ch.OutputStreams {
+				for _, stream := range ch.OutputStreams {
 					if stream.URL == message.OutputStreamURL {
 						stream.Channel <- true
-						close(stream.Channel)
-						ch.OutputStreams = append(ch.OutputStreams[:idx], ch.OutputStreams[idx+1:]...)
-					} else {
-						newStreams = append(newStreams, stream)
 					}
 				}
-
-				ch.OutputStreams = newStreams
-
-				log.Debugf("channel %s now has %d output streams", ch.Conn.URL.Path, len(ch.OutputStreams))
 			}
 
 			config.Lock.Unlock()
 		}
 
 		if message.Action == "add" {
-			config.Lock.Lock()
+			config.Lock.RLock()
 			ch, chExists := channels[message.ChannelURL]
+			config.Lock.RUnlock()
 
 			if chExists {
 				outputExists := false
+				config.Lock.RLock()
 				for _, stream := range ch.OutputStreams {
 					if stream.URL == message.OutputStreamURL {
 						outputExists = true
+						config.Lock.RUnlock()
 						break
 					}
 				}
+				config.Lock.RUnlock()
 
 				if outputExists {
-					config.Lock.Unlock()
-
 					log.Debugf("start signal sent for stream %s %s but it already exists", message.ChannelURL, message.OutputStreamURL)
 					continue
 				}
@@ -290,14 +305,8 @@ func subscribeToEvents() {
 					Channel: make(chan bool),
 				}
 
-				channels[message.ChannelURL].OutputStreams = append(channels[message.ChannelURL].OutputStreams, outputStream)
-
-				go relayConnection(&outputStream, &relayWG)
-
-				log.Debugf("channel %s now has %d output streams", ch.Conn.URL.Path, len(ch.OutputStreams))
+				go relayConnection(ch, outputStream, &relayWG)
 			}
-
-			config.Lock.Unlock()
 		}
 	}
 }
