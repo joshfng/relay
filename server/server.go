@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/go-redis/redis"
 	"github.com/joshfng/joy4/av/avutil"
@@ -22,9 +24,9 @@ import (
 // maybe retry?
 
 var channels = make(map[string]*Channel)
-var relayWG = sync.WaitGroup{}
 var redisClient *redis.Client
 var config Config
+var publishWaitGroup sync.WaitGroup
 
 // Config configs the server
 type Config struct {
@@ -54,18 +56,41 @@ type Channel struct {
 	Lock          *sync.RWMutex
 	Conn          *rtmp.Conn
 	OutputStreams []OutputStream
+	WaitGroup     *sync.WaitGroup
 }
 
 // NewChannel is an incomming stream from a user
 func NewChannel() *Channel {
 	return &Channel{
-		Queue: pubsub.NewQueue(),
-		Lock:  config.Lock,
+		Queue:     pubsub.NewQueue(),
+		Lock:      config.Lock,
+		WaitGroup: &sync.WaitGroup{},
 	}
 }
 
 // StartServer starts the RTMP server and relay proxies
 func StartServer(serverConfig Config) {
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		log.Info("got shutdown signal, closing relays and connections")
+		for _, channel := range channels {
+			for _, outputStream := range channel.OutputStreams {
+				outputStream.Channel <- true
+			}
+
+			channel.WaitGroup.Wait()
+
+			channel.Conn.WriteTrailer()
+			channel.Conn.Close()
+		}
+
+		publishWaitGroup.Wait()
+
+		os.Exit(1)
+	}()
+
 	config = serverConfig
 	redisClient = redis.NewClient(&redis.Options{
 		Addr: config.RedisAddr,
@@ -88,9 +113,9 @@ func StartServer(serverConfig Config) {
 	server.ListenAndServe()
 }
 
-func relayConnection(channel *Channel, outputStream OutputStream, wg *sync.WaitGroup) {
-	wg.Add(1)
-	defer wg.Done()
+func relayConnection(channel *Channel, outputStream OutputStream) {
+	channel.WaitGroup.Add(1)
+	defer channel.WaitGroup.Done()
 
 	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", outputStream.PlayURL}, "")
 
@@ -178,6 +203,9 @@ func HandlePlay(conn *rtmp.Conn) {
 
 // HandlePublish handles an incoming stream
 func HandlePublish(conn *rtmp.Conn) {
+	publishWaitGroup.Add(1)
+	defer publishWaitGroup.Done()
+
 	log.Info("starting publish for ", conn.URL.Path)
 
 	if !StreamExists(conn.URL.Path) {
@@ -205,7 +233,7 @@ func HandlePublish(conn *rtmp.Conn) {
 			Channel: make(chan bool),
 		}
 
-		go relayConnection(ch, outputStream, &relayWG)
+		go relayConnection(ch, outputStream)
 	}
 
 	log.Debugf("stream started %s", conn.URL.Path)
@@ -220,7 +248,7 @@ func HandlePublish(conn *rtmp.Conn) {
 		outputStream.Channel <- true
 	}
 
-	relayWG.Wait()
+	ch.WaitGroup.Wait()
 
 	config.Lock.Lock()
 	delete(channels, conn.URL.Path)
@@ -228,6 +256,7 @@ func HandlePublish(conn *rtmp.Conn) {
 
 	log.Info("stopped publish for ", conn.URL.Path)
 	log.Debugf("server is now managing %d channels", len(channels))
+
 }
 
 func subscribeToEvents() {
@@ -286,7 +315,6 @@ func subscribeToEvents() {
 				for _, stream := range ch.OutputStreams {
 					if stream.URL == message.OutputStreamURL {
 						outputExists = true
-						config.Lock.RUnlock()
 						break
 					}
 				}
@@ -305,7 +333,7 @@ func subscribeToEvents() {
 					Channel: make(chan bool),
 				}
 
-				go relayConnection(ch, outputStream, &relayWG)
+				go relayConnection(ch, outputStream)
 			}
 		}
 	}
