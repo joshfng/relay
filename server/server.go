@@ -17,19 +17,16 @@ import (
 	"github.com/spf13/viper"
 )
 
-// TODO: listen to redis for changes to outputstreams or channels
-// if an output stream was removed, send the kill signal and remove from array
-// if an output stream was added, start the relay and add to the array
+// TODO:
 // when a relay ends early, set something in redis to notify the user of the disconnect
 // maybe retry?
 
 var channels = make(map[string]*Channel)
 var redisClient *redis.Client
-var config Config
 var publishWaitGroup sync.WaitGroup
 
-// Config configs the server
-type Config struct {
+// Server holds config for the server
+type Server struct {
 	RedisAddr string
 	RtmpAddr  string
 	Lock      *sync.RWMutex
@@ -60,16 +57,16 @@ type Channel struct {
 }
 
 // NewChannel is an incomming stream from a user
-func NewChannel() *Channel {
+func (server Server) NewChannel() *Channel {
 	return &Channel{
 		Queue:     pubsub.NewQueue(),
-		Lock:      config.Lock,
+		Lock:      server.Lock,
 		WaitGroup: &sync.WaitGroup{},
 	}
 }
 
 // StartServer starts the RTMP server and relay proxies
-func StartServer(serverConfig Config) {
+func (server Server) StartServer() {
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
@@ -91,29 +88,28 @@ func StartServer(serverConfig Config) {
 		os.Exit(1)
 	}()
 
-	config = serverConfig
 	redisClient = redis.NewClient(&redis.Options{
-		Addr: config.RedisAddr,
+		Addr: server.RedisAddr,
 	})
 	if redisClient.Ping().Err() != nil {
 		panic("Unable to connect to redis")
 	}
 
-	go subscribeToEvents()
+	go server.subscribeToEvents()
 
-	server := &rtmp.Server{
-		Addr: config.RtmpAddr,
+	rtmpServer := &rtmp.Server{
+		Addr: server.RtmpAddr,
 	}
 
-	server.HandlePlay = HandlePlay
-	server.HandlePublish = HandlePublish
+	rtmpServer.HandlePlay = server.HandlePlay
+	rtmpServer.HandlePublish = server.HandlePublish
 
-	log.Info("server running:", server.Addr)
+	log.Infof("server running %s", rtmpServer.Addr)
 
-	server.ListenAndServe()
+	rtmpServer.ListenAndServe()
 }
 
-func relayConnection(channel *Channel, outputStream OutputStream) {
+func (server Server) relayConnection(channel *Channel, outputStream OutputStream) {
 	channel.WaitGroup.Add(1)
 	defer channel.WaitGroup.Done()
 
@@ -177,7 +173,7 @@ func StreamExists(url string) bool {
 }
 
 // HandlePlay pushes incoming stream to outbound stream
-func HandlePlay(conn *rtmp.Conn) {
+func (server Server) HandlePlay(conn *rtmp.Conn) {
 	log.Debug("got play ", conn.URL.Path)
 
 	if !StreamExists(conn.URL.Path) {
@@ -186,9 +182,9 @@ func HandlePlay(conn *rtmp.Conn) {
 		return
 	}
 
-	config.Lock.RLock()
+	server.Lock.RLock()
 	ch, chExists := channels[conn.URL.Path]
-	config.Lock.RUnlock()
+	server.Lock.RUnlock()
 
 	if !chExists {
 		log.Infof("Channel not found for play %s; dropping connection", conn.URL.Path)
@@ -202,7 +198,7 @@ func HandlePlay(conn *rtmp.Conn) {
 }
 
 // HandlePublish handles an incoming stream
-func HandlePublish(conn *rtmp.Conn) {
+func (server Server) HandlePublish(conn *rtmp.Conn) {
 	publishWaitGroup.Add(1)
 	defer publishWaitGroup.Done()
 
@@ -216,13 +212,13 @@ func HandlePublish(conn *rtmp.Conn) {
 
 	streams, _ := conn.Streams()
 
-	config.Lock.Lock()
-	ch := NewChannel()
+	server.Lock.Lock()
+	ch := server.NewChannel()
 	defer ch.Queue.Close()
 	ch.Queue.WriteHeader(streams)
 	channels[conn.URL.Path] = ch
 	channels[conn.URL.Path].Conn = conn
-	config.Lock.Unlock()
+	server.Lock.Unlock()
 
 	for _, outputStreamURL := range redisClient.SMembers(conn.URL.Path).Val() {
 		log.Debug("creating relay connections for ", conn.URL.Path)
@@ -233,7 +229,7 @@ func HandlePublish(conn *rtmp.Conn) {
 			Channel: make(chan bool),
 		}
 
-		go relayConnection(ch, outputStream)
+		go server.relayConnection(ch, outputStream)
 	}
 
 	log.Debugf("stream started %s", conn.URL.Path)
@@ -250,16 +246,16 @@ func HandlePublish(conn *rtmp.Conn) {
 
 	ch.WaitGroup.Wait()
 
-	config.Lock.Lock()
+	server.Lock.Lock()
 	delete(channels, conn.URL.Path)
-	config.Lock.Unlock()
+	server.Lock.Unlock()
 
 	log.Info("stopped publish for ", conn.URL.Path)
 	log.Debugf("server is now managing %d channels", len(channels))
 
 }
 
-func subscribeToEvents() {
+func (server Server) subscribeToEvents() {
 	redisChannel := "streamoutput-events"
 	pubsub := redisClient.Subscribe(redisChannel)
 	defer pubsub.Close()
@@ -283,12 +279,12 @@ func subscribeToEvents() {
 		log.Debugf("got pubsub message %s, %v", msg.Channel, message)
 
 		if message.Action == "remove" {
-			config.Lock.Lock()
+			server.Lock.Lock()
 			ch, chExists := channels[message.ChannelURL]
 
 			if chExists {
 				if len(ch.OutputStreams) == 0 {
-					config.Lock.Unlock()
+					server.Lock.Unlock()
 					continue
 				}
 
@@ -301,24 +297,24 @@ func subscribeToEvents() {
 				}
 			}
 
-			config.Lock.Unlock()
+			server.Lock.Unlock()
 		}
 
 		if message.Action == "add" {
-			config.Lock.RLock()
+			server.Lock.RLock()
 			ch, chExists := channels[message.ChannelURL]
-			config.Lock.RUnlock()
+			server.Lock.RUnlock()
 
 			if chExists {
 				outputExists := false
-				config.Lock.RLock()
+				server.Lock.RLock()
 				for _, stream := range ch.OutputStreams {
 					if stream.URL == message.OutputStreamURL {
 						outputExists = true
 						break
 					}
 				}
-				config.Lock.RUnlock()
+				server.Lock.RUnlock()
 
 				if outputExists {
 					log.Debugf("start signal sent for stream %s %s but it already exists", message.ChannelURL, message.OutputStreamURL)
@@ -333,7 +329,7 @@ func subscribeToEvents() {
 					Channel: make(chan bool),
 				}
 
-				go relayConnection(ch, outputStream)
+				go server.relayConnection(ch, outputStream)
 			}
 		}
 	}

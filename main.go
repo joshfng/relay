@@ -31,10 +31,10 @@ func main() {
 	initConfig()
 	initLogging()
 
-	config := server.Config{
+	server := server.Server{
 		RedisAddr: viper.GetString("REDIS_URL"),
 		RtmpAddr:  viper.GetString("RTMP_URL"),
 		Lock:      &sync.RWMutex{},
 	}
-	server.StartServer(config)
+	server.StartServer()
 }
