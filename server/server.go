@@ -4,17 +4,14 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/go-redis/redis"
 	"github.com/joshfng/joy4/av/avutil"
 	"github.com/joshfng/joy4/av/pubsub"
 	"github.com/joshfng/joy4/format/rtmp"
 	log "github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
 )
 
 // TODO: when a relay fails notify the user of the disconnect & maybe retry?
@@ -25,18 +22,20 @@ var publishWaitGroup sync.WaitGroup
 
 // Server holds config for the server
 type Server struct {
-	RedisAddr string
-	RtmpAddr  string
-	Lock      *sync.RWMutex
-	Conn      *rtmp.Conn
+	RedisAddr  string
+	RtmpAddr   string
+	FFMPEGPath string
+	Lock       *sync.RWMutex
+	Conn       *rtmp.Conn
 }
 
 // NewServer returns a new relay server
-func NewServer(rtmpURL string, redisURL string) *Server {
+func NewServer(rtmpURL string, redisURL string, FFMPEGPath string) *Server {
 	return &Server{
-		RtmpAddr:  rtmpURL,
-		RedisAddr: redisURL,
-		Lock:      &sync.RWMutex{},
+		RtmpAddr:   rtmpURL,
+		RedisAddr:  redisURL,
+		FFMPEGPath: FFMPEGPath,
+		Lock:       &sync.RWMutex{},
 	}
 }
 
@@ -77,27 +76,6 @@ func (server Server) NewChannel(conn *rtmp.Conn) *Channel {
 
 // StartServer starts the RTMP server and relay proxies
 func (server Server) StartServer() {
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-c
-		log.Info("got shutdown signal, closing relays and connections")
-		for _, channel := range channels {
-			for _, outputStream := range channel.OutputStreams {
-				outputStream.Channel <- true
-			}
-
-			channel.WaitGroup.Wait()
-
-			channel.Conn.WriteTrailer()
-			channel.Conn.Close()
-		}
-
-		publishWaitGroup.Wait()
-
-		os.Exit(0)
-	}()
-
 	redisClient = redis.NewClient(&redis.Options{
 		Addr: server.RedisAddr,
 	})
@@ -129,7 +107,7 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", channel.URL}, "")
 
 	log.Debugf("starting ffmpeg relay for %s", playURL)
-	cmd := exec.Command(viper.GetString("FFMPEG_PATH"), "-i", playURL, "-c", "copy", "-f", "flv", currentOutputStream.URL)
+	cmd := exec.Command(server.FFMPEGPath, "-i", playURL, "-c", "copy", "-f", "flv", currentOutputStream.URL)
 
 	log.Debugf("ffmpeg args %v", cmd.Args)
 
@@ -151,7 +129,13 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 			log.Infof("ffmpeg process exited %s", err)
 		}
 
-		currentOutputStream.Channel <- true
+		channel.Lock.RLock()
+		for _, outputStream := range channel.OutputStreams {
+			if outputStream.URL == currentOutputStream.URL {
+				currentOutputStream.Channel <- true
+			}
+		}
+		channel.Lock.RUnlock()
 	}()
 
 	<-currentOutputStream.Channel
@@ -163,7 +147,6 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 
 	// remove output stream from channel
 	channel.Lock.Lock()
-
 	newStreams := []OutputStream{}
 	for _, outputStream := range channel.OutputStreams {
 		if outputStream.URL == currentOutputStream.URL {
@@ -172,14 +155,13 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 			newStreams = append(newStreams, outputStream)
 		}
 	}
-
 	channel.OutputStreams = newStreams
 	log.Debugf("channel %s now has %d output streams", channel.Conn.URL.Path, len(channel.OutputStreams))
 	channel.Lock.Unlock()
 }
 
-// StreamExists checks if the requested stream is allowed
-func StreamExists(url string) bool {
+// ChannelAllowed checks if the requested stream is allowed
+func ChannelAllowed(url string) bool {
 	return redisClient.SIsMember("streams", url).Val()
 }
 
@@ -187,7 +169,7 @@ func StreamExists(url string) bool {
 func (server Server) HandlePlay(conn *rtmp.Conn) {
 	log.Debug("got play ", conn.URL.Path)
 
-	if !StreamExists(conn.URL.Path) {
+	if !ChannelAllowed(conn.URL.Path) {
 		log.Infof("Unknown stream ID for %s; dropping connection", conn.URL.Path)
 		conn.Close()
 		return
@@ -205,6 +187,7 @@ func (server Server) HandlePlay(conn *rtmp.Conn) {
 
 	log.Debug("play started ", ch.URL)
 	avutil.CopyFile(conn, ch.Queue.Latest())
+	conn.Close()
 	log.Debug("play stopped ", ch.URL)
 }
 
@@ -215,7 +198,7 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 
 	log.Info("starting publish for ", conn.URL.Path)
 
-	if !StreamExists(conn.URL.Path) {
+	if !ChannelAllowed(conn.URL.Path) {
 		log.Infof("Unknown stream ID for %s; dropping connection", conn.URL.Path)
 		conn.Close()
 		return
@@ -223,10 +206,10 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 
 	streams, _ := conn.Streams()
 
-	server.Lock.Lock()
 	ch := server.NewChannel(conn)
 	defer ch.Queue.Close()
 	ch.Queue.WriteHeader(streams)
+	server.Lock.Lock()
 	channels[ch.URL] = ch
 	server.Lock.Unlock()
 
@@ -248,10 +231,12 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 
 	log.Debugf("stream stopped %s", ch.URL)
 
+	ch.Lock.RLock()
 	for _, outputStream := range ch.OutputStreams {
 		log.Debugf("sending stop signal to channel for output url %s", outputStream.URL)
 		outputStream.Channel <- true
 	}
+	ch.Lock.RUnlock()
 
 	ch.WaitGroup.Wait()
 
@@ -287,13 +272,13 @@ func (server Server) subscribeToEvents() {
 
 		log.Debugf("got pubsub message %s, %v", msg.Channel, message)
 
-		if message.Action == "remove" {
-			server.Lock.Lock()
+		if message.Action == "remove-output" {
+			server.Lock.RLock()
 			ch, chExists := channels[message.ChannelURL]
 
 			if chExists {
 				if len(ch.OutputStreams) == 0 {
-					server.Lock.Unlock()
+					server.Lock.RUnlock()
 					continue
 				}
 
@@ -306,10 +291,10 @@ func (server Server) subscribeToEvents() {
 				}
 			}
 
-			server.Lock.Unlock()
+			server.Lock.RUnlock()
 		}
 
-		if message.Action == "add" {
+		if message.Action == "add-output" {
 			server.Lock.RLock()
 			ch, chExists := channels[message.ChannelURL]
 			server.Lock.RUnlock()
@@ -338,6 +323,16 @@ func (server Server) subscribeToEvents() {
 				}
 
 				go server.relayConnection(ch, &outputStream)
+			}
+		}
+
+		if message.Action == "remove-channel" {
+			server.Lock.RLock()
+			ch, chExists := channels[message.ChannelURL]
+			server.Lock.RUnlock()
+
+			if chExists {
+				ch.Conn.Close()
 			}
 		}
 	}
