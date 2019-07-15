@@ -187,7 +187,6 @@ func (server Server) HandlePlay(conn *rtmp.Conn) {
 
 	log.Debug("play started ", ch.URL)
 	avutil.CopyFile(conn, ch.Queue.Latest())
-	conn.Close()
 	log.Debug("play stopped ", ch.URL)
 }
 
