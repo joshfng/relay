@@ -35,14 +35,18 @@ coverhtml: ## Generate global code coverage report in HTML
 dep: ## Get the dependencies
 	@go get -v -d ./...
 
+run:
+	@go run -race *.go
+
 build: dep ## Build the binary file
-	@go build ${LDFLAGS} -race -v -a $(PKG)
+	@go build ${LDFLAGS} -v -a $(PKG)
 
 build_all:
 	@$(foreach GOOS, $(PLATFORMS),\
-	$(foreach GOARCH, $(ARCHITECTURES), $(shell export GOOS=$(GOOS); export GOARCH=$(GOARCH); go build $(LDFLAGS) -race -v -a -o $(BINARY)-$(GOOS)-$(GOARCH))))
+	$(foreach GOARCH, $(ARCHITECTURES), $(shell export GOOS=$(GOOS); export GOARCH=$(GOARCH); go build $(LDFLAGS) -v -a -o $(BINARY)-$(GOOS)-$(GOARCH))))
 
 clean: ## Remove previous builds
+	@rm relay || true
 	@$(foreach GOOS, $(PLATFORMS),\
 	$(foreach GOARCH, $(ARCHITECTURES), $(shell rm -rf $(BINARY)-$(GOOS)-$(GOARCH))))
 

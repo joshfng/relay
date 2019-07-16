@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/joshfng/joy4/av/avutil"
+	"github.com/joshfng/joy4/av/pktque"
 	"github.com/joshfng/joy4/av/pubsub"
 	"github.com/joshfng/joy4/format/rtmp"
 	log "github.com/sirupsen/logrus"
@@ -48,8 +49,9 @@ type PubSubMessage struct {
 
 // OutputStream holds info about outbound rtmp streams
 type OutputStream struct {
-	URL     string
-	Channel chan bool
+	URL       string
+	Channel   chan bool
+	TxBitrate float64
 }
 
 // Channel holds connection information and packet queue
@@ -61,6 +63,7 @@ type Channel struct {
 	Conn          *rtmp.Conn
 	OutputStreams []OutputStream
 	WaitGroup     *sync.WaitGroup
+	RxBitrate     float64
 }
 
 // NewChannel is an incomming stream from a user
@@ -74,8 +77,8 @@ func (server Server) NewChannel(conn *rtmp.Conn) *Channel {
 	}
 }
 
-// StartServer starts the RTMP server and relay proxies
-func (server Server) StartServer() {
+// Start starts the RTMP server and relay proxies
+func (server Server) Start() {
 	redisClient = redis.NewClient(&redis.Options{
 		Addr: server.RedisAddr,
 	})
@@ -103,6 +106,30 @@ func (server Server) StartServer() {
 func (server Server) relayConnection(channel *Channel, currentOutputStream *OutputStream) {
 	channel.WaitGroup.Add(1)
 	defer channel.WaitGroup.Done()
+
+	// TODO: youtube drops the connection trying to do this all in go
+	// solution for now is to use ffmpeg to relay
+	// dest, err := rtmp.Dial(currentOutputStream.URL)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	//
+	// streams, _ := channel.Conn.Streams()
+	// dest.WriteHeader(streams)
+	// dest.Prepare()
+	//
+	// filters := pktque.Filters{}
+	// filters = append(filters, &pktque.Walltime{})
+	// demuxer := &pktque.FilterDemuxer{
+	// 	Filter:  filters,
+	// 	Demuxer: channel.Queue.Latest(),
+	// }
+	// err = avutil.CopyPackets(dest, demuxer)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	// dest.WriteTrailer()
+	// currentOutputStream.Channel <- true
 
 	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", channel.URL}, "")
 
@@ -185,6 +212,7 @@ func (server Server) HandlePlay(conn *rtmp.Conn) {
 		return
 	}
 
+	// TODO: find a way to calculate outbound bitrate and attach OutputStream
 	log.Debug("play started ", ch.URL)
 	avutil.CopyFile(conn, ch.Queue.Latest())
 	log.Debug("play stopped ", ch.URL)
@@ -226,7 +254,13 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 	log.Debugf("stream started %s", ch.URL)
 	log.Debugf("server is now managing %d channels", len(channels))
 
-	avutil.CopyPackets(ch.Queue, conn)
+	filters := pktque.Filters{}
+	filters = append(filters, &CalcBitrate{Channel: ch})
+	demuxer := &pktque.FilterDemuxer{
+		Filter:  filters,
+		Demuxer: conn,
+	}
+	avutil.CopyPackets(ch.Queue, demuxer)
 
 	log.Debugf("stream stopped %s", ch.URL)
 

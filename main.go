@@ -29,6 +29,9 @@ func main() {
 	initConfig()
 	initLogging()
 
-	server := server.NewServer(viper.GetString("RTMP_URL"), viper.GetString("REDIS_URL"), viper.GetString("FFMPEG_PATH"))
-	server.StartServer()
+	server.NewServer(
+		viper.GetString("RTMP_URL"),
+		viper.GetString("REDIS_URL"),
+		viper.GetString("FFMPEG_PATH"),
+	).Start()
 }
