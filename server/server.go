@@ -63,7 +63,7 @@ type Channel struct {
 	Conn          *rtmp.Conn
 	OutputStreams []OutputStream
 	WaitGroup     *sync.WaitGroup
-	RxBitrate     float64
+	RxBitrate     int64
 }
 
 // NewChannel is an incomming stream from a user
@@ -213,9 +213,9 @@ func (server Server) HandlePlay(conn *rtmp.Conn) {
 	}
 
 	// TODO: find a way to calculate outbound bitrate and attach OutputStream
-	log.Debug("play started ", ch.URL)
-	avutil.CopyFile(conn, ch.Queue.Latest())
-	log.Debug("play stopped ", ch.URL)
+	log.Debugf("play started %s", ch.URL)
+	bytesCount, _ := avutil.CopyFile(conn, ch.Queue.Latest())
+	log.Debugf("play stopped %s, copied %.2fmb", ch.URL, float64(bytesCount/1e+6))
 }
 
 // HandlePublish handles an incoming stream
@@ -260,9 +260,9 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 		Filter:  filters,
 		Demuxer: conn,
 	}
-	avutil.CopyPackets(ch.Queue, demuxer)
+	bytesCount, _ := avutil.CopyPackets(ch.Queue, demuxer)
 
-	log.Debugf("stream stopped %s", ch.URL)
+	log.Debugf("stream stopped %s, copied %.2fmb", ch.URL, float64(bytesCount/1e+6))
 
 	ch.Lock.RLock()
 	for _, outputStream := range ch.OutputStreams {
