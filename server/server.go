@@ -261,6 +261,7 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 		Demuxer: conn,
 	}
 	bytesCount, _ := avutil.CopyPackets(ch.Queue, demuxer)
+	//bytesCount, _ := avutil.CopyFile(ch.Queue, conn)
 
 	log.Debugf("stream stopped %s, copied %.2fmb", ch.URL, float64(bytesCount/1e+6))
 
