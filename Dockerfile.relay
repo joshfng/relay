@@ -11,7 +11,7 @@ RUN go build -o relay *.go
 
 FROM alpine
 
-RUN apk --update add ffmpeg htop tini
+RUN apk --update add ffmpeg htop # tini
 
 COPY --from=builder /go/src/github.com/joshfng/relay/relay /relay
 
@@ -19,4 +19,5 @@ EXPOSE 1935
 
 STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["/sbin/tini", "--", "./relay"]
+# ENTRYPOINT ["/sbin/tini", "--", "./relay"]
+ENTRYPOINT ["./relay"]

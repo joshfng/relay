@@ -6,6 +6,9 @@ services:
     container_name: redis
     ports:
       - "6379:6379"
+    restart: always
+    networks:
+      - relay-network
 
   # proxy:
   #   ports:
@@ -28,7 +31,14 @@ services:
       dockerfile: Dockerfile.relay
     env_file: .env
     stop_grace_period: 30s
-    links:
-      - redis
     depends_on:
       - redis
+    links:
+      - redis
+    networks:
+      - relay-network
+    restart: always
+
+networks:
+  relay-network:
+    external: true
