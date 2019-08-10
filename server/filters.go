@@ -22,14 +22,9 @@ type CalcBitrate struct {
 func (bitrate *CalcBitrate) ModifyPacket(pkt *av.Packet, streams []av.CodecData, videoidx int, audioidx int) (drop bool, err error) {
 	drop = false
 
-	// if pkt.Idx != int8(videoidx) { // || !pkt.IsKeyFrame {
-	// 	return
-	// }
-
-	// TODO: Pretty sure this is somewhat incorrect
 	bitrate.bitCnt += int64(len(pkt.Data))
 
-	// log kb/s ever 2 seconds
+	// log kb/s every 2 seconds
 	if bitrate.lastTime+(2000000000) <= time.Now().UnixNano() {
 		bitrate.lastTime = time.Now().UnixNano()
 

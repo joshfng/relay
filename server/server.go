@@ -284,8 +284,6 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 }
 
 func (server Server) subscribeToEvents() {
-	// TODO: need to be able to add/remove full channels
-
 	redisChannel := "streamoutput-events"
 	pubsub := redisClient.Subscribe(redisChannel)
 	defer pubsub.Close()
