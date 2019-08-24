@@ -134,7 +134,13 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", channel.URL}, "")
 
 	log.Debugf("starting ffmpeg relay for %s", playURL)
+
 	cmd := exec.Command(server.FFMPEGPath, "-i", playURL, "-c", "copy", "-f", "flv", currentOutputStream.URL)
+
+	// TODO: make this optional and filename dynamic
+	if currentOutputStream.URL == "file" {
+		cmd = exec.Command(server.FFMPEGPath, "-y", "-i", playURL, "-c", "copy", "output.mkv")
+	}
 
 	log.Debugf("ffmpeg args %v", cmd.Args)
 
@@ -250,6 +256,12 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 
 		go server.relayConnection(ch, &outputStream)
 	}
+
+	outputStream := OutputStream{
+		URL:     "file",
+		Channel: make(chan bool),
+	}
+	go server.relayConnection(ch, &outputStream)
 
 	log.Debugf("stream started %s", ch.URL)
 	log.Debugf("server is now managing %d channels", len(channels))
