@@ -28,16 +28,18 @@ type Server struct {
 	RedisAddr  string
 	RtmpAddr   string
 	FFMPEGPath string
+	S3Bucket   string
 	Lock       *sync.RWMutex
 	Conn       *rtmp.Conn
 }
 
 // NewServer returns a new relay server
-func NewServer(rtmpURL string, redisURL string, FFMPEGPath string) *Server {
+func NewServer(rtmpURL string, redisURL string, FFMPEGPath string, s3Bucket string) *Server {
 	return &Server{
 		RtmpAddr:   rtmpURL,
 		RedisAddr:  redisURL,
 		FFMPEGPath: FFMPEGPath,
+		S3Bucket:   s3Bucket,
 		Lock:       &sync.RWMutex{},
 	}
 }
@@ -110,6 +112,7 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 	defer channel.WaitGroup.Done()
 
 	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", channel.URL}, "")
+	fileName := "file" + strings.ReplaceAll(channel.URL, "/", "-") + "-" + strconv.FormatInt(time.Now().Unix(), 10) + ".mkv"
 
 	log.Debugf("starting ffmpeg relay for %s", playURL)
 
@@ -117,8 +120,7 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 
 	// TODO: make this optional
 	if currentOutputStream.URL == "file" {
-		fileName := "file" + strings.ReplaceAll(channel.URL, "/", "-") + "-" + strconv.FormatInt(time.Now().Unix(), 10) + ".mkv"
-		cmd = exec.Command(server.FFMPEGPath, "-y", "-i", playURL, "-c", "copy", fileName)
+		cmd = exec.Command(server.FFMPEGPath, "-y", "-i", playURL, "-c", "copy", "-f", "matroska", fileName)
 	}
 
 	log.Debugf("ffmpeg args %v", cmd.Args)
@@ -126,6 +128,8 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 	err := cmd.Start()
 	if err != nil {
 		log.Infof("error starting ffmpeg %v", err)
+		stdoutStderr, _ := cmd.CombinedOutput()
+		log.Info(stdoutStderr)
 		return
 	}
 
@@ -139,6 +143,8 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 		err := cmd.Wait()
 		if err != nil && err.Error() != "signal: killed" {
 			log.Infof("ffmpeg process exited %s", err)
+			stdoutStderr, _ := cmd.CombinedOutput()
+			log.Info(stdoutStderr)
 		}
 
 		channel.Lock.RLock()
@@ -170,6 +176,12 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 	channel.OutputStreams = newStreams
 	log.Debugf("channel %s now has %d output streams", channel.Conn.URL.Path, len(channel.OutputStreams))
 	channel.Lock.Unlock()
+
+	if currentOutputStream.URL == "file" {
+		cmd := exec.Command("aws", "s3", "cp", fileName, "s3://"+server.S3Bucket+"/relay/"+fileName)
+		log.Debugf("s3 copy args %v", cmd.Args)
+		go cmd.Run()
+	}
 }
 
 // ChannelAllowed checks if the requested stream is allowed

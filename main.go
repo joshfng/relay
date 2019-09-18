@@ -33,5 +33,6 @@ func main() {
 		viper.GetString("RTMP_URL"),
 		viper.GetString("REDIS_URL"),
 		viper.GetString("FFMPEG_PATH"),
+		viper.GetString("S3_BUCKET"),
 	).Start()
 }
