@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-redis/redis"
 	"github.com/joshfng/joy4/av/avutil"
@@ -107,39 +109,16 @@ func (server Server) relayConnection(channel *Channel, currentOutputStream *Outp
 	channel.WaitGroup.Add(1)
 	defer channel.WaitGroup.Done()
 
-	// TODO: youtube drops the connection trying to do this all in go
-	// solution for now is to use ffmpeg to relay
-	// dest, err := rtmp.Dial(currentOutputStream.URL)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	//
-	// streams, _ := channel.Conn.Streams()
-	// dest.WriteHeader(streams)
-	// dest.Prepare()
-	//
-	// filters := pktque.Filters{}
-	// filters = append(filters, &pktque.Walltime{})
-	// demuxer := &pktque.FilterDemuxer{
-	// 	Filter:  filters,
-	// 	Demuxer: channel.Queue.Latest(),
-	// }
-	// err = avutil.CopyPackets(dest, demuxer)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// dest.WriteTrailer()
-	// currentOutputStream.Channel <- true
-
 	playURL := strings.Join([]string{"rtmp://127.0.0.1:1935", channel.URL}, "")
 
 	log.Debugf("starting ffmpeg relay for %s", playURL)
 
 	cmd := exec.Command(server.FFMPEGPath, "-i", playURL, "-c", "copy", "-f", "flv", currentOutputStream.URL)
 
-	// TODO: make this optional and filename dynamic
+	// TODO: make this optional
 	if currentOutputStream.URL == "file" {
-		cmd = exec.Command(server.FFMPEGPath, "-y", "-i", playURL, "-c", "copy", "output.mkv")
+		fileName := "file" + strings.ReplaceAll(channel.URL, "/", "-") + "-" + strconv.FormatInt(time.Now().Unix(), 10) + ".mkv"
+		cmd = exec.Command(server.FFMPEGPath, "-y", "-i", playURL, "-c", "copy", fileName)
 	}
 
 	log.Debugf("ffmpeg args %v", cmd.Args)
