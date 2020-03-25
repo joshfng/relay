@@ -1,44 +1,42 @@
-version: "3"
+version: "3.7"
 
 services:
   redis:
     image: redis:5-alpine
-    container_name: redis
+    expose:
+      - "6379"
+    restart: always
     ports:
       - "6379:6379"
-    restart: always
-    networks:
-      - relay-network
 
   # proxy:
-  #   ports:
-  #     - "1935:1935"
   #   build:
   #     context: .
-  #     dockerfile: Dockerfile.proxy
+  #     dockerfile: proxy.Dockerfile
   #   container_name: proxy
   #   volumes:
   #     - ./nginx.conf:/etc/nginx/nginx.conf
   #   depends_on:
   #     - relay
+  #   expose:
+  #     - "1935"
+  #   restart: always
+  #   ports:
+  #     - "1935:1935"
 
   relay:
-    container_name: relay
-    ports:
-      - "1935:1935"
     build:
       context: .
-      dockerfile: Dockerfile.relay
+      dockerfile: relay.Dockerfile
+    container_name: relay
     env_file: .env
     stop_grace_period: 30s
     depends_on:
       - redis
-    links:
-      - redis
-    networks:
-      - relay-network
+    expose:
+      - "1935"
+    ports:
+      - "1935:1935"
     restart: always
-
-networks:
-  relay-network:
-    external: true
+    volumes:
+      - ./:/go/src/github.com/joshfng/relay
