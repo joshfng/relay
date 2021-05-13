@@ -3,7 +3,7 @@ package server
 import (
 	"time"
 
-	"github.com/joshfng/joy4/av"
+	"github.com/nareix/joy4/av"
 	log "github.com/sirupsen/logrus"
 )
 

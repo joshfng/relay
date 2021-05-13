@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/joshfng/joy4/av/avutil"
-	"github.com/joshfng/joy4/av/pktque"
-	"github.com/joshfng/joy4/av/pubsub"
-	"github.com/joshfng/joy4/format/rtmp"
+	"github.com/nareix/joy4/av/avutil"
+	"github.com/nareix/joy4/av/pktque"
+	"github.com/nareix/joy4/av/pubsub"
+	"github.com/nareix/joy4/format/rtmp"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -211,8 +211,8 @@ func (server Server) HandlePlay(conn *rtmp.Conn) {
 
 	// TODO: find a way to calculate outbound bitrate and attach OutputStream
 	log.Debugf("play started %s", ch.URL)
-	bytesCount, _ := avutil.CopyFile(conn, ch.Queue.Latest())
-	log.Debugf("play stopped %s, copied %.2fmb", ch.URL, float64(bytesCount/1e+6))
+	bytesCount := avutil.CopyFile(conn, ch.Queue.Latest())
+	log.Debugf("play stopped %s, copied %.2fmb", ch.URL, bytesCount)
 }
 
 // HandlePublish handles an incoming stream
@@ -263,10 +263,10 @@ func (server Server) HandlePublish(conn *rtmp.Conn) {
 		Filter:  filters,
 		Demuxer: conn,
 	}
-	bytesCount, _ := avutil.CopyPackets(ch.Queue, demuxer)
+	bytesCount := avutil.CopyPackets(ch.Queue, demuxer)
 	//bytesCount, _ := avutil.CopyFile(ch.Queue, conn)
 
-	log.Debugf("stream stopped %s, copied %.2fmb", ch.URL, float64(bytesCount/1e+6))
+	log.Debugf("stream stopped %s, copied %.2fmb", ch.URL, bytesCount)
 
 	ch.Lock.RLock()
 	for _, outputStream := range ch.OutputStreams {
