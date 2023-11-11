@@ -1,9 +1,9 @@
 package main
 
 import (
+	"github.com/joshfng/relay/server"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
-	"github.com/suspiciousmilk/relay/server"
 )
 
 func initConfig() {

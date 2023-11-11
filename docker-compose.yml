@@ -39,4 +39,4 @@ services:
       - "1935:1935"
     restart: always
     volumes:
-      - ./:/go/src/github.com/suspiciousmilk/relay
+      - ./:/go/src/github.com/joshfng/relay

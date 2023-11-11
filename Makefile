@@ -4,7 +4,7 @@ BUILD=`git rev-parse HEAD`
 PLATFORMS=darwin linux
 ARCHITECTURES=amd64
 
-PKG := "github.com/suspiciousmilk/relay"
+PKG := "github.com/joshfng/relay"
 PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
 GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/ | grep -v _test.go)
 
